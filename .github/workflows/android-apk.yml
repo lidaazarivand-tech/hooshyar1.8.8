@@ -1,0 +1,221 @@
+name: Build Hooshyar Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+  pull_request:
+    branches:
+      - main
+      - master
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Hooshyar Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ----------------------------------------
+      # 1. دریافت پروژه
+      # ----------------------------------------
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+      # ----------------------------------------
+      # 2. نصب Node.js 22
+      # Capacitor 8 به Node.js جدید نیاز دارد
+      # ----------------------------------------
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+
+      # ----------------------------------------
+      # 3. بررسی Node و npm
+      # ----------------------------------------
+      - name: Check Node.js
+        run: |
+          node --version
+          npm --version
+
+
+      # ----------------------------------------
+      # 4. نصب وابستگی‌های پروژه با npm ci
+      # ----------------------------------------
+      - name: Install Dependencies
+        run: |
+          npm ci
+
+      # ----------------------------------------
+      # 5. اعتبارسنجی TypeScript
+      # ----------------------------------------
+      - name: Validate TypeScript
+        run: |
+          npx tsc --noEmit
+
+      # ----------------------------------------
+      # 6. اجرای تست‌های خودکار وب
+      # ----------------------------------------
+      - name: Run Web Unit Tests
+        run: |
+          npm test -- --run
+
+      # ----------------------------------------
+      # 7. ساخت نسخه Web
+      # ----------------------------------------
+      - name: Build Web Application
+        run: |
+          npm run build
+
+      # ----------------------------------------
+      # 8. نصب Java 21
+      # Capacitor 8 / Android به Java 21 نیاز دارد
+      # ----------------------------------------
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # ----------------------------------------
+      # 9. بررسی Java
+      # ----------------------------------------
+      - name: Check Java Version
+        run: |
+          java -version
+
+      # ----------------------------------------
+      # 10. نصب Android SDK
+      # ----------------------------------------
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      # ----------------------------------------
+      # 11. نصب Android SDK Platform 36
+      # ----------------------------------------
+      - name: Install Android SDK Packages
+        run: |
+          yes | sdkmanager --licenses || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      # ----------------------------------------
+      # 12. آماده‌سازی و بررسی ساختار Android
+      # ----------------------------------------
+      - name: Prepare Android Project
+        run: |
+          echo "Verifying existing Android project..."
+          chmod +x android/gradlew
+          echo "Android project prepared."
+
+      # ----------------------------------------
+      # 13. Sync کردن Capacitor با Android
+      # ----------------------------------------
+      - name: Sync Capacitor
+        run: |
+          npx cap sync android
+
+      # ----------------------------------------
+      # 14. بررسی ساختار Android
+      # ----------------------------------------
+      - name: Verify Android Project
+        run: |
+          echo "Checking Android project..."
+
+          test -f android/gradlew
+          test -f android/gradle/wrapper/gradle-wrapper.jar
+          test -f android/settings.gradle
+
+          echo "Android project is valid."
+
+          ls -la android/
+
+      # ----------------------------------------
+      # 15. اجرای تست‌های واحد Android (JUnit)
+      # ----------------------------------------
+      - name: Run Android Unit Tests
+        working-directory: android
+        run: |
+          ./gradlew test --stacktrace
+
+      # ----------------------------------------
+      # 16. ساخت APK Debug
+      # ----------------------------------------
+      - name: Build Debug APK
+        working-directory: android
+        run: |
+          ./gradlew assembleDebug --stacktrace
+
+      # ----------------------------------------
+      # 17. آماده‌سازی و ساخت APK Release (با ساین یا بدون ساین)
+      # ----------------------------------------
+      - name: Build Release APK
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "Signing secrets detected. Decoding release keystore for secure signing..."
+            echo "$KEYSTORE_BASE64" | base64 --decode > app/release-signing.jks
+            export KEYSTORE_FILE="release-signing.jks"
+            ./gradlew assembleRelease --stacktrace
+            echo "Securely cleaning up temporary keystore file..."
+            rm -f app/release-signing.jks
+            echo "Signed Release APK build complete."
+          else
+            echo "Notice: Release signing secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) not configured in GitHub repository secrets."
+            echo "Building unsigned Release APK. To produce signed APKs, add these 4 secrets in GitHub Repository Settings -> Secrets and variables -> Actions."
+            ./gradlew assembleRelease --stacktrace
+            echo "Unsigned Release APK build complete."
+          fi
+
+      # ----------------------------------------
+      # 18. پیدا کردن APK ها
+      # ----------------------------------------
+      - name: Find APK Files
+        run: |
+          echo "================================"
+          echo "Generated APK files:"
+          echo "================================"
+
+          find android/app/build/outputs \
+            -type f \
+            -name "*.apk" \
+            -print
+
+      # ----------------------------------------
+      # 19. آپلود Debug APK
+      # ----------------------------------------
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hooshyar-Debug-APK
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # ----------------------------------------
+      # 20. آپلود Release APK
+      # ----------------------------------------
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hooshyar-Release-APK
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30
